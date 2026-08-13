@@ -152,6 +152,54 @@ async fn buffered_mode_skips_prebuffering_a_cached_track() {
     );
 }
 
+/// The prebuffer already downloads the whole track before mpv reads it. A
+/// background cache fill on top would be a second concurrent transfer of the
+/// same bytes, competing for the link and delaying the playback the user is
+/// waiting on. The cache must adopt the prebuffered copy instead.
+#[tokio::test]
+#[serial]
+async fn buffered_miss_transfers_the_track_exactly_once() {
+    let td = TestDaemon::new().await;
+    td.core.media_cache().set_enabled(true);
+    let body = payload(256 * 1024);
+    td.fake_subsonic
+        .expect_stream_for("abc", body.clone())
+        .await;
+
+    {
+        let mut s = td.state.write().await;
+        s.queue.push(song("abc", "Track A"));
+    }
+
+    td.core
+        .play_queue_position(0, PlayMode::Buffered)
+        .await
+        .unwrap();
+
+    let cached = td.core.media_cache().entry_path("abc", None);
+    assert!(
+        wait_for_cached(&cached, 5000).await,
+        "the prebuffered file must be adopted into the cache"
+    );
+    assert_eq!(
+        std::fs::read(&cached).unwrap(),
+        body,
+        "the adopted copy must be byte-identical to the track"
+    );
+
+    let transfers = td
+        .fake_subsonic
+        .received_requests()
+        .await
+        .iter()
+        .filter(|r| r.url.path() == "/rest/stream")
+        .count();
+    assert_eq!(
+        transfers, 1,
+        "a buffered play must fetch the track once, not once to play and again to cache"
+    );
+}
+
 #[tokio::test]
 #[serial]
 async fn disabled_cache_streams_and_writes_nothing() {

@@ -44,7 +44,7 @@ impl DaemonCore {
             return Ok(());
         };
 
-        let source = self.resolve_playback_source(&song, stream_url);
+        let source = self.resolve_playback_source(&song, stream_url, mode);
 
         info!(
             "Playing: {} (queue pos {}) mode={:?} cached={}",
@@ -54,7 +54,7 @@ impl DaemonCore {
             source.is_cached()
         );
 
-        self.dispatch_play(source, idx, mode, 0.0).await?;
+        self.dispatch_play(source, &song, idx, mode, 0.0).await?;
         self.emit_now_playing().await;
         self.emit_queue().await;
         self.spawn_fast_probe();

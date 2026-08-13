@@ -578,14 +578,14 @@ impl DaemonCore {
         let Some((song, stream_url, idx)) = prepared else {
             return Ok(false);
         };
-        let source = self.resolve_playback_source(&song, stream_url);
+        let source = self.resolve_playback_source(&song, stream_url, PlayMode::Buffered);
         info!(
             "Playing: {} (queue pos {}) mode=Buffered cached={}",
             song.title,
             idx,
             source.is_cached()
         );
-        self.dispatch_play(source, idx, PlayMode::Buffered, 0.0)
+        self.dispatch_play(source, &song, idx, PlayMode::Buffered, 0.0)
             .await?;
         self.emit_now_playing().await;
         self.emit_queue().await;
@@ -635,6 +635,7 @@ impl DaemonCore {
     pub(super) async fn dispatch_play(
         self: &Arc<Self>,
         source: PlaybackSource,
+        song: &crate::subsonic::models::Child,
         pos: usize,
         mode: PlayMode,
         start_at: f64,
@@ -709,7 +710,7 @@ impl DaemonCore {
                         let _ = mpv.stop().await;
                     }
                 }
-                self.prebuffer_and_load(stream_url, pos, loading, cancel)
+                self.prebuffer_and_load(stream_url, song, pos, loading, cancel)
                     .await;
                 owner.disarm();
             }
@@ -819,11 +820,18 @@ impl DaemonCore {
     async fn prebuffer_and_load(
         self: &Arc<Self>,
         url: String,
+        song: &crate::subsonic::models::Child,
         preload_pos: usize,
         loading: Arc<AtomicBool>,
         cancel: Arc<AtomicBool>,
     ) {
         use std::sync::Arc as StdArc;
+
+        // Identity for the cache adoption at the end of a successful fetch;
+        // cloned out so the spawned task does not borrow the queue entry.
+        let cache_id = song.id.clone();
+        let cache_suffix = song.suffix.clone();
+        let cache_title = song.title.clone();
 
         let temp = match tempfile::Builder::new()
             .prefix("ferrosonic-prebuf-")
@@ -966,6 +974,9 @@ impl DaemonCore {
                 return;
             }
             core.settle_rate_then_unpause(gen, None).await;
+            // Playback has started; the bytes are already on local disk, so
+            // the cache adopts that copy instead of re-fetching the track.
+            core.adopt_prebuffered_file(path, cache_id, cache_suffix, cache_title);
             core.preload_next_track(preload_pos).await;
             let _ = &slot_cleaner;
         });

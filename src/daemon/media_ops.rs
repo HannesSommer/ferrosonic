@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tracing::{debug, info, warn};
 
-use crate::daemon::core::{DaemonCore, PlaybackSource};
+use crate::daemon::core::{DaemonCore, PlayMode, PlaybackSource};
 use crate::media_cache::MediaCacheError;
 use crate::subsonic::models::Child;
 
@@ -13,14 +13,21 @@ impl DaemonCore {
     /// Pick the source for `song`, whose signed stream URL is `stream_url`.
     ///
     /// A cache hit returns the local path and touches nothing else. A miss
-    /// returns the stream URL and starts a background download, so mpv begins
-    /// playing immediately over the network while the copy lands on disk for
-    /// next time. The fill costs a second transfer of the track on its first
-    /// play; that is the price of never delaying playback to fill the cache.
+    /// returns the stream URL, and for [`PlayMode::Direct`] starts a background
+    /// download so mpv can begin playing immediately over the network while the
+    /// copy lands on disk for next time. That fill costs a second transfer of
+    /// the track on its first play; it is the price of never delaying playback.
+    ///
+    /// [`PlayMode::Buffered`] gets no background fill: that path already
+    /// downloads the whole track before mpv reads it, and a concurrent second
+    /// transfer of the same bytes would compete with it for the link and delay
+    /// the very playback the user is waiting on. The prebuffer hands its
+    /// finished file to [`Self::adopt_prebuffered_file`] instead.
     pub(super) fn resolve_playback_source(
         self: &Arc<Self>,
         song: &Child,
         stream_url: String,
+        mode: PlayMode,
     ) -> PlaybackSource {
         if !self.media_cache.is_enabled() {
             return PlaybackSource::Remote(stream_url);
@@ -29,8 +36,34 @@ impl DaemonCore {
             debug!("Media cache hit for {} ({})", song.title, path.display());
             return PlaybackSource::Cached(path);
         }
-        self.spawn_cache_fill(song, &stream_url);
+        if mode == PlayMode::Direct {
+            self.spawn_cache_fill(song, &stream_url);
+        }
         PlaybackSource::Remote(stream_url)
+    }
+
+    /// Copy a completed prebuffer temp file into the media cache.
+    ///
+    /// Runs on the blocking pool and after mpv has the file, so a large copy
+    /// never sits between the download finishing and playback starting.
+    pub(super) fn adopt_prebuffered_file(
+        self: &Arc<Self>,
+        temp_path: std::path::PathBuf,
+        song_id: String,
+        suffix: Option<String>,
+        title: String,
+    ) {
+        if !self.media_cache.is_enabled() {
+            return;
+        }
+        let cache = self.media_cache.clone();
+        tokio::task::spawn_blocking(move || {
+            match cache.insert_from_file(&temp_path, &song_id, suffix.as_deref()) {
+                Ok(path) => info!("Cached {} to {}", title, path.display()),
+                Err(MediaCacheError::AlreadyInFlight | MediaCacheError::Disabled) => {}
+                Err(e) => warn!("Could not cache {}: {}", title, e),
+            }
+        });
     }
 
     /// Download `song` into the media cache in the background.

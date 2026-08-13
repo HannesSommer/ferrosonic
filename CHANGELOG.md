@@ -13,7 +13,10 @@
 
   Playback never waits on the cache: on a miss mpv streams immediately while
   the copy is fetched in the background, so a track's first play transfers it
-  twice and every later play transfers nothing. The cache is capped by
+  twice and every later play transfers nothing. The pre-buffered path used for
+  album switches and library shuffle already downloads the whole track before
+  playing, so there the cache adopts that copy rather than fetching it a second
+  time. The cache is capped by
   `MediaCacheSizeMB` (default 2048, minimum 128) and evicts least-recently-played
   tracks first; a track larger than the whole cache is never stored. Downloads
   land in a temp file and are renamed into place only after completing and

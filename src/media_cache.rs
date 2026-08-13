@@ -394,6 +394,89 @@ impl MediaCache {
         Ok(())
     }
 
+    /// Adopt an already-downloaded file into the cache by copying it in.
+    ///
+    /// For the prebuffer path, which fetches the whole track to a temp file
+    /// before mpv reads it: the bytes are already local, so re-downloading
+    /// them to fill the cache would compete with playback for the same link.
+    /// A local copy costs disk IO instead of a second transfer.
+    ///
+    /// Blocking; run it off the async runtime. `src` is left untouched, since
+    /// mpv is still reading it.
+    ///
+    /// # Errors
+    /// Returns a [`MediaCacheError`] if caching is off, a store for this track
+    /// is already running, `src` is empty or does not fit the cache, or a
+    /// filesystem operation fails.
+    pub fn insert_from_file(
+        &self,
+        src: &Path,
+        song_id: &str,
+        suffix: Option<&str>,
+    ) -> Result<PathBuf, MediaCacheError> {
+        if !self.is_enabled() {
+            return Err(MediaCacheError::Disabled);
+        }
+        let dest = self.entry_path(song_id, suffix);
+
+        let key = song_id.to_string();
+        {
+            let mut in_flight = match self.in_flight.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if !in_flight.insert(key.clone()) {
+                return Err(MediaCacheError::AlreadyInFlight);
+            }
+        }
+        let _guard = InFlightGuard {
+            set: &self.in_flight,
+            key,
+        };
+
+        if std::fs::metadata(&dest).is_ok_and(|m| m.is_file() && m.len() > 0) {
+            return Ok(dest);
+        }
+
+        let size = std::fs::metadata(src)?.len();
+        if size == 0 {
+            return Err(MediaCacheError::Truncated {
+                expected: 0,
+                got: 0,
+            });
+        }
+        let capacity = self.capacity_bytes();
+        if size > capacity {
+            return Err(MediaCacheError::TooLarge { size, capacity });
+        }
+
+        std::fs::create_dir_all(&self.root)?;
+        let mut temp = tempfile::Builder::new()
+            .prefix(TEMP_PREFIX)
+            .tempfile_in(&self.root)?;
+        let copied = std::io::copy(&mut std::fs::File::open(src)?, temp.as_file_mut())?;
+        // A short copy means `src` was truncated under us (the prebuffer temp
+        // file is unlinked once mpv is done with it); publishing it would put
+        // a partial track in the cache forever.
+        if copied != size {
+            return Err(MediaCacheError::Truncated {
+                expected: size,
+                got: copied,
+            });
+        }
+        temp.as_file().sync_all()?;
+        temp.persist(&dest)
+            .map_err(|e| MediaCacheError::Io(e.error))?;
+        crate::io_util::fsync_parent_dir(&dest);
+        self.evict_to_capacity_excluding(Some(&dest));
+        debug!(
+            "Adopted {} into the cache ({} KB)",
+            dest.display(),
+            size / 1024
+        );
+        Ok(dest)
+    }
+
     /// Total bytes held by completed cache entries.
     ///
     /// In-progress downloads are excluded: they are not yet cache content and
