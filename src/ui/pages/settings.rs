@@ -70,6 +70,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState<'_>) {
     let scrobble_val = if settings.scrobble { "On" } else { "Off" }.to_string();
     let daemon_val = if settings.daemon_enabled { "On" } else { "Off" }.to_string();
     let notifications_val = if settings.notifications { "On" } else { "Off" }.to_string();
+    let media_cache_val = if settings.media_cache { "On" } else { "Off" }.to_string();
+    let media_cache_size_val = format!("{} MB", settings.media_cache_size_mb);
+    // Usage is measured by the Settings key handler, not per render; until it
+    // has run once the row says so rather than claiming an empty cache.
+    let media_cache_usage_val = settings.media_cache_usage.map_or_else(
+        || "press Enter to clear".to_string(),
+        |bytes| {
+            format!(
+                "{} used - press Enter to clear",
+                crate::media_cache::format_size(bytes)
+            )
+        },
+    );
 
     let x = inner.x;
     let w = inner.width;
@@ -134,6 +147,23 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState<'_>) {
             value: notifications_val,
             idx: 9,
         },
+        Item::Gap,
+        Item::Heading("Media Cache"),
+        Item::Row {
+            label: "Media Cache",
+            value: media_cache_val,
+            idx: 10,
+        },
+        Item::Row {
+            label: "Cache Limit",
+            value: media_cache_size_val,
+            idx: 11,
+        },
+        Item::Row {
+            label: "Clear Cache",
+            value: media_cache_usage_val,
+            idx: 12,
+        },
     ];
 
     {
@@ -177,7 +207,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState<'_>) {
 }
 
 /// Help-line text for the selected settings field. Indices MUST track the
-/// `Item::Row { idx }` order in `render`: 7 Scrobble, 8 Daemon, 9 Notifications.
+/// `Item::Row { idx }` order in `render`: 7 Scrobble, 8 Daemon, 9 Notifications,
+/// 10-12 the media cache rows.
 // Each setting's cava-ok/not-installed cases kept adjacent; merging would split setting 2.
 #[allow(clippy::match_same_arms)]
 const fn settings_help_text(sel: usize, cava_ok: bool) -> &'static str {
@@ -194,6 +225,9 @@ const fn settings_help_text(sel: usize, cava_ok: bool) -> &'static str {
         7 => "← → or Enter to toggle scrobbling (report plays to the server)",
         8 => "← → or Enter to toggle background daemon (takes effect on next launch)",
         9 => "← → or Enter to toggle desktop notifications on track change",
+        10 => "← → or Enter to keep local copies of played tracks (replays skip the network)",
+        11 => "← → to adjust the media cache size limit (256 MB steps)",
+        12 => "Enter to delete every cached track",
         _ => "",
     }
 }
@@ -274,10 +308,22 @@ mod tests {
             settings_help_text(9, true).contains("notifications"),
             "idx 9 is Desktop Notifications"
         );
+        assert!(
+            settings_help_text(10, true).contains("local copies"),
+            "idx 10 is Media Cache"
+        );
+        assert!(
+            settings_help_text(11, true).contains("size limit"),
+            "idx 11 is the Cache Limit"
+        );
+        assert!(
+            settings_help_text(12, true).contains("delete"),
+            "idx 12 is Clear Cache"
+        );
         assert_eq!(
-            settings_help_text(10, true),
+            settings_help_text(13, true),
             "",
-            "no field beyond Notifications"
+            "no field beyond Clear Cache"
         );
     }
 

@@ -22,6 +22,7 @@ call site.
 | 9 | `last_preload_attempt` | `std::sync::Mutex<Option<Instant>>` | retry-throttle for failed gapless preloads |
 | 10 | `cover_art_cache` | `RwLock<LruCache<Vec<u8>>>` | bounded LRU of cover-art bytes |
 | 11 | `scrobble_state` | `Mutex<ScrobbleState>` | per-play scrobble tracking; never held with any other lock |
+| 12 | `media_cache.in_flight` | `std::sync::Mutex<HashSet<String>>` | keys with a running download; never held with any other lock |
 
 ## Standard idioms
 
@@ -41,6 +42,13 @@ call site.
   `scrobble_state` alone to decide, then releases it before spawning
   the report task (which reads `subsonic`). It never holds two locks
   at once, so lock 11 cannot invert with any other.
+- `MediaCache::store` claims its key in `in_flight` and releases the
+  guard before the first `.await`; `InFlightGuard::Drop` re-takes the
+  lock synchronously to release the key. The lock is therefore never
+  held across an await and cannot invert with any other. Cache
+  lookups on the play path are plain filesystem calls under no lock,
+  so `resolve_playback_source` can be called while `state` is free
+  and before `mpv` is taken.
 
 ## What this fixes
 

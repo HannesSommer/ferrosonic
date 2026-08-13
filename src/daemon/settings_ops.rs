@@ -255,6 +255,49 @@ impl DaemonCore {
         Ok(())
     }
 
+    /// Persist the media-cache toggle and apply it to the running cache.
+    ///
+    /// Switching off keeps the cached files: the user may be freeing bandwidth,
+    /// not disk, and re-enabling should not mean re-downloading. `ClearMediaCache`
+    /// is the explicit way to reclaim the space.
+    ///
+    /// # Errors
+    /// Returns an `Error` if persisting the config fails.
+    pub async fn set_media_cache(self: &Arc<Self>, on: bool) -> Result<(), Error> {
+        let capacity = {
+            let mut state = self.state.write().await;
+            state.config.media_cache = on;
+            state.config.save_default().map_err(Error::Config)?;
+            state.config.media_cache_capacity_bytes()
+        };
+        self.apply_media_cache_config(on, capacity);
+        self.emit_config_changed().await;
+        Ok(())
+    }
+
+    /// Persist the media-cache size cap in megabytes and evict down to it.
+    ///
+    /// # Errors
+    /// Returns an `Error` if persisting the config fails.
+    pub async fn set_media_cache_size(self: &Arc<Self>, size_mb: u32) -> Result<(), Error> {
+        let clamped = size_mb.clamp(
+            crate::config::Config::MEDIA_CACHE_MIN_MB,
+            crate::config::Config::MEDIA_CACHE_MAX_MB,
+        );
+        let (enabled, capacity) = {
+            let mut state = self.state.write().await;
+            state.config.media_cache_size_mb = clamped;
+            state.config.save_default().map_err(Error::Config)?;
+            (
+                state.config.media_cache,
+                state.config.media_cache_capacity_bytes(),
+            )
+        };
+        self.apply_media_cache_config(enabled, capacity);
+        self.emit_config_changed().await;
+        Ok(())
+    }
+
     /// Persist the cava size, clamped to 10-80 rows.
     ///
     /// # Errors

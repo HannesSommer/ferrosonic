@@ -166,6 +166,12 @@ pub enum DaemonRequest {
     SetScrobble(bool),
     /// Enable or disable desktop notifications on track change.
     SetNotifications(bool),
+    /// Enable or disable the on-disk media cache.
+    SetMediaCache(bool),
+    /// Set the media cache size cap in megabytes.
+    SetMediaCacheSize(u32),
+    /// Delete every cached media file.
+    ClearMediaCache,
     /// Select the library to browse (`None` = all libraries).
     SetMusicFolder(Option<i64>),
     /// Set the repeat mode and persist the choice.
@@ -246,6 +252,13 @@ pub enum DaemonResponse {
     },
     /// Number of history entries removed by `ClearQueueHistory`.
     HistoryCleared(usize),
+    /// Outcome of `ClearMediaCache`.
+    MediaCacheCleared {
+        /// Number of cached files removed.
+        files: usize,
+        /// Bytes reclaimed on disk.
+        bytes: u64,
+    },
     /// Full daemon state, boxed for frame-size economy.
     Snapshot(Box<DaemonState>),
     /// Results of a `Search` request.

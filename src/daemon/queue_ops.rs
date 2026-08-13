@@ -44,12 +44,17 @@ impl DaemonCore {
             return Ok(());
         };
 
+        let source = self.resolve_playback_source(&song, stream_url);
+
         info!(
-            "Playing: {} (queue pos {}) mode={:?}",
-            song.title, idx, mode
+            "Playing: {} (queue pos {}) mode={:?} cached={}",
+            song.title,
+            idx,
+            mode,
+            source.is_cached()
         );
 
-        self.dispatch_play(stream_url, idx, mode, 0.0).await?;
+        self.dispatch_play(source, idx, mode, 0.0).await?;
         self.emit_now_playing().await;
         self.emit_queue().await;
         self.spawn_fast_probe();

@@ -28,6 +28,37 @@ pub enum PlayMode {
     Buffered,
 }
 
+/// Where the bytes for a track come from on this play.
+///
+/// Resolved once per load by `resolve_playback_source`, so the media cache is
+/// consulted in exactly one place and every downstream mpv call takes the same
+/// argument shape whether the track is local or remote.
+#[derive(Debug, Clone)]
+pub enum PlaybackSource {
+    /// Signed `rest/stream` URL; mpv pulls the track over the network.
+    Remote(String),
+    /// A complete copy already in the media cache; mpv reads it off disk.
+    Cached(std::path::PathBuf),
+}
+
+impl PlaybackSource {
+    /// The string handed to mpv's `loadfile`. mpv accepts a filesystem path
+    /// and a URL in the same argument position.
+    #[must_use]
+    pub fn as_mpv_arg(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Remote(url) => std::borrow::Cow::Borrowed(url),
+            Self::Cached(path) => path.to_string_lossy(),
+        }
+    }
+
+    /// Whether the bytes are already on local disk.
+    #[must_use]
+    pub const fn is_cached(&self) -> bool {
+        matches!(self, Self::Cached(_))
+    }
+}
+
 const EVENT_CHANNEL_CAPACITY: usize = 32;
 
 /// Drop clears `prebuffer_loading` if `dispatch_play` is cancelled before the spawn task takes over.
@@ -194,6 +225,10 @@ pub struct DaemonCore {
     /// Sends desktop notifications on track change (Linux D-Bus); no-op when
     /// disabled in config or when no session bus is reachable.
     pub(super) notifier: crate::daemon::notify::Notifier,
+    /// On-disk copies of played tracks. `Arc` so a background fill task holds
+    /// the cache without keeping the whole core alive. Its internal lock is
+    /// last in the order and never held across an await.
+    pub(super) media_cache: Arc<crate::media_cache::MediaCache>,
 }
 
 impl DaemonCore {
@@ -258,12 +293,26 @@ impl DaemonCore {
             scrobble_state: Mutex::new(crate::daemon::scrobble::ScrobbleState::default()),
             playback_report_supported: AtomicBool::new(false),
             notifier: crate::daemon::notify::Notifier::new(),
+            media_cache: Arc::new(crate::media_cache::MediaCache::from_config(config)),
         });
 
         core.clone().spawn_queue_persistence(queue_save_rx);
         core.spawn_refresh_scrobble_capability();
         Self::sweep_orphan_prebuffer_files();
+        if core.media_cache.is_enabled() {
+            // A cap lowered while the daemon was down, or downloads leaked by
+            // a killed process, are both reconciled here rather than lingering
+            // until the next play happens to trigger eviction.
+            core.media_cache.sweep_stale_downloads();
+            core.media_cache.evict_to_capacity();
+        }
         core
+    }
+
+    /// The on-disk media cache, for IPC handlers and tests.
+    #[must_use]
+    pub const fn media_cache(&self) -> &Arc<crate::media_cache::MediaCache> {
+        &self.media_cache
     }
 
     /// Best-effort cleanup of `/tmp/ferrosonic-prebuf-*.dat` left
@@ -529,8 +578,14 @@ impl DaemonCore {
         let Some((song, stream_url, idx)) = prepared else {
             return Ok(false);
         };
-        info!("Playing: {} (queue pos {}) mode=Buffered", song.title, idx);
-        self.dispatch_play(stream_url, idx, PlayMode::Buffered, 0.0)
+        let source = self.resolve_playback_source(&song, stream_url);
+        info!(
+            "Playing: {} (queue pos {}) mode=Buffered cached={}",
+            song.title,
+            idx,
+            source.is_cached()
+        );
+        self.dispatch_play(source, idx, PlayMode::Buffered, 0.0)
             .await?;
         self.emit_now_playing().await;
         self.emit_queue().await;
@@ -579,11 +634,21 @@ impl DaemonCore {
     #[allow(clippy::significant_drop_tightening)]
     pub(super) async fn dispatch_play(
         self: &Arc<Self>,
-        stream_url: String,
+        source: PlaybackSource,
         pos: usize,
         mode: PlayMode,
         start_at: f64,
     ) -> Result<(), Error> {
+        // Buffered exists to get the file onto local disk before mpv reads it,
+        // so mpv sees a complete file and reports the true track length. A
+        // cache hit has already satisfied that, and prebuffering would try to
+        // re-fetch a local path over HTTP; load it directly instead.
+        let mode = if source.is_cached() {
+            PlayMode::Direct
+        } else {
+            mode
+        };
+        let stream_url = source.as_mpv_arg().into_owned();
         match mode {
             PlayMode::Direct => {
                 // Reject non-finite/negative offsets so they can never reach

@@ -16,9 +16,15 @@ enum SettingChange {
     Scrobble,
     Daemon,
     Notifications,
+    MediaCache,
+    MediaCacheSize,
+    ClearMediaCache,
 }
 
-const SETTINGS_FIELD_COUNT: usize = 10;
+const SETTINGS_FIELD_COUNT: usize = 13;
+
+/// Step for the media cache size row, in megabytes.
+const MEDIA_CACHE_STEP_MB: u32 = 256;
 
 impl App {
     // Cohesive single match/render; splitting would fragment one logical unit.
@@ -74,6 +80,8 @@ impl App {
             scrobble,
             daemon_enabled,
             notifications,
+            media_cache,
+            media_cache_size_mb,
             gradient,
             h_gradient,
         ) = {
@@ -95,6 +103,8 @@ impl App {
                 s.scrobble,
                 s.daemon_enabled,
                 s.notifications,
+                s.media_cache,
+                s.media_cache_size_mb,
                 s.current_theme().cava_gradient.clone(),
                 s.current_theme().cava_horizontal_gradient.clone(),
             )
@@ -110,16 +120,41 @@ impl App {
             SettingChange::Scrobble => DaemonRequest::SetScrobble(scrobble),
             SettingChange::Daemon => DaemonRequest::SetDaemonEnabled(daemon_enabled),
             SettingChange::Notifications => DaemonRequest::SetNotifications(notifications),
+            SettingChange::MediaCache => DaemonRequest::SetMediaCache(media_cache),
+            SettingChange::MediaCacheSize => DaemonRequest::SetMediaCacheSize(media_cache_size_mb),
+            SettingChange::ClearMediaCache => DaemonRequest::ClearMediaCache,
         };
-        if let Err(e) = self.client.request(req).await {
-            let ds = self.daemon_state.read().await;
+        let response = match self.client.request(req).await {
+            Ok(r) => r,
+            Err(e) => {
+                let ds = self.daemon_state.read().await;
+                let mut cs = self.client_state.write().await;
+                let state = AppState {
+                    daemon: &ds,
+                    client: &mut cs,
+                };
+                state.client.notify_error(format!("Failed to save: {e}"));
+                return Ok(());
+            }
+        };
+
+        // Any cache-affecting change moves the on-disk figure the readout
+        // shows, so re-measure once here rather than scanning on every render.
+        if matches!(
+            change,
+            SettingChange::MediaCache
+                | SettingChange::MediaCacheSize
+                | SettingChange::ClearMediaCache
+        ) {
+            let usage = crate::media_cache::default_usage_bytes();
             let mut cs = self.client_state.write().await;
-            let state = AppState {
-                daemon: &ds,
-                client: &mut cs,
-            };
-            state.client.notify_error(format!("Failed to save: {e}"));
-            return Ok(());
+            cs.settings_state.media_cache_usage = usage;
+            if let crate::ipc::DaemonResponse::MediaCacheCleared { files, bytes } = response {
+                cs.notify(format!(
+                    "Media cache cleared: {files} files, {} freed",
+                    crate::media_cache::format_size(bytes)
+                ));
+            }
         }
 
         // Cava lifecycle is client-side; daemon toggle doesn't affect it.
@@ -151,7 +186,10 @@ impl App {
             | SettingChange::AutoContinue
             | SettingChange::Scrobble
             | SettingChange::Daemon
-            | SettingChange::Notifications => {}
+            | SettingChange::Notifications
+            | SettingChange::MediaCache
+            | SettingChange::MediaCacheSize
+            | SettingChange::ClearMediaCache => {}
         }
 
         Ok(())
@@ -234,6 +272,31 @@ fn adjust_setting(
             s.notifications = !s.notifications;
             Some(SettingChange::Notifications)
         }
+        10 => {
+            s.media_cache = !s.media_cache;
+            Some(SettingChange::MediaCache)
+        }
+        11 => {
+            let cur = s.media_cache_size_mb;
+            let stepped = if step < 0 {
+                cur.saturating_sub(MEDIA_CACHE_STEP_MB)
+            } else {
+                cur.saturating_add(MEDIA_CACHE_STEP_MB)
+            };
+            let new = stepped.clamp(
+                crate::config::Config::MEDIA_CACHE_MIN_MB,
+                crate::config::Config::MEDIA_CACHE_MAX_MB,
+            );
+            if new == cur {
+                None
+            } else {
+                s.media_cache_size_mb = new;
+                Some(SettingChange::MediaCacheSize)
+            }
+        }
+        // Clearing is destructive and cannot be undone, so only the forward
+        // key fires it; Left on this row does nothing.
+        12 if step > 0 => Some(SettingChange::ClearMediaCache),
         _ => None,
     }
 }
@@ -250,6 +313,12 @@ fn change_message(s: &crate::app::state::SettingsState, change: SettingChange) -
         SettingChange::Scrobble => format!("Scrobble: {}", on_off(s.scrobble)),
         SettingChange::Daemon => format!("Daemon: {} (restart to apply)", on_off(s.daemon_enabled)),
         SettingChange::Notifications => format!("Notifications: {}", on_off(s.notifications)),
+        SettingChange::MediaCache => format!("Media Cache: {}", on_off(s.media_cache)),
+        SettingChange::MediaCacheSize => {
+            format!("Media Cache Limit: {} MB", s.media_cache_size_mb)
+        }
+        // The daemon's reply carries the real totals and replaces this.
+        SettingChange::ClearMediaCache => "Clearing media cache...".to_string(),
     }
 }
 

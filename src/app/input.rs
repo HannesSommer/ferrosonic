@@ -178,6 +178,11 @@ impl App {
             }
             (KeyCode::F(6), _) => {
                 state.client.page = Page::Settings;
+                // Measure the media cache once on entry so the readout is
+                // populated before the user reaches its row; a directory scan
+                // per page switch is far cheaper than one per render.
+                state.client.settings_state.media_cache_usage =
+                    crate::media_cache::default_usage_bytes();
                 return Ok(());
             }
             (KeyCode::Char('p' | ' '), KeyModifiers::NONE) => {
