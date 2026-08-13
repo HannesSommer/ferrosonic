@@ -166,15 +166,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState<'_>) {
         },
     ];
 
+    let row_limit = inner.y + inner.height.saturating_sub(1);
+    // Scroll so the selected row stays visible when the panel is too short.
+    let visible = (row_limit - inner.y) as usize;
+    let sel_idx = items
+        .iter()
+        .position(|it| matches!(it, Item::Row { idx, .. } if *idx == sel))
+        .unwrap_or(0);
+    let start = sel_idx.saturating_sub(visible.saturating_sub(1));
+    // The list is taller than a 24-row terminal can show, so rows past the
+    // fold are invisible with no hint they exist. Mark which way there is more.
+    let hint = scroll_hint(start > 0, start + visible < items.len());
+
     {
-        let row_limit = inner.y + inner.height.saturating_sub(1);
-        // Scroll so the selected row stays visible when the panel is too short.
-        let visible = (row_limit - inner.y) as usize;
-        let sel_idx = items
-            .iter()
-            .position(|it| matches!(it, Item::Row { idx, .. } if *idx == sel))
-            .unwrap_or(0);
-        let start = sel_idx.saturating_sub(visible.saturating_sub(1));
         let buf = frame.buffer_mut();
         for (y, item) in (inner.y..).zip(items.iter().skip(start)) {
             if y >= row_limit {
@@ -199,11 +203,31 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState<'_>) {
 
     let help_text = settings_help_text(sel, cava_ok);
     let help_y = inner.y + inner.height.saturating_sub(1);
+    // Reserve the right edge for the scroll hint so a long help line cannot
+    // overwrite it.
+    let hint_w = u16::try_from(hint.chars().count()).unwrap_or(0);
+    let help_w = inner.width.saturating_sub(hint_w);
     let help = Paragraph::new(help_text).style(Style::default().fg(colors.muted));
-    help.render(
-        Rect::new(inner.x, help_y, inner.width, 1),
-        frame.buffer_mut(),
-    );
+    help.render(Rect::new(inner.x, help_y, help_w, 1), frame.buffer_mut());
+    if hint_w > 0 && inner.width > hint_w {
+        Paragraph::new(hint)
+            .style(Style::default().fg(colors.accent))
+            .render(
+                Rect::new(inner.x + help_w, help_y, hint_w, 1),
+                frame.buffer_mut(),
+            );
+    }
+}
+
+/// Marker showing which directions hold rows outside the visible window, so a
+/// terminal too short for the whole list does not silently hide settings.
+const fn scroll_hint(more_above: bool, more_below: bool) -> &'static str {
+    match (more_above, more_below) {
+        (true, true) => "▲▼",
+        (true, false) => "▲",
+        (false, true) => "▼",
+        (false, false) => "",
+    }
 }
 
 /// Help-line text for the selected settings field. Indices MUST track the
@@ -325,6 +349,19 @@ mod tests {
             "",
             "no field beyond Clear Cache"
         );
+    }
+
+    #[test]
+    fn scroll_hint_marks_each_direction_with_hidden_rows() {
+        use super::scroll_hint;
+        assert_eq!(
+            scroll_hint(false, false),
+            "",
+            "a fully visible list is unmarked"
+        );
+        assert_eq!(scroll_hint(false, true), "▼");
+        assert_eq!(scroll_hint(true, false), "▲");
+        assert_eq!(scroll_hint(true, true), "▲▼");
     }
 
     #[test]

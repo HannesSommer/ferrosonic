@@ -54,6 +54,13 @@ impl App {
                             client: &mut cs,
                         };
                         state.client.page = tab_page;
+                        // Clicking the tab must enter a page exactly as its
+                        // F-key does. The Settings cache readout is measured
+                        // on entry, so without this it stays stale (or never
+                        // appears at all) when the page is reached by mouse.
+                        if tab_page == Page::Settings {
+                            state.client.settings_state.refresh_media_cache_usage();
+                        }
                     }
                     HeaderRegion::PrevButton => {
                         return self

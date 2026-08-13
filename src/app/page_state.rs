@@ -239,6 +239,16 @@ impl Default for SettingsState {
 }
 
 impl SettingsState {
+    /// Re-measure the media cache for the Settings readout.
+    ///
+    /// Call this on every entry to the Settings page, whichever way the user
+    /// got there. It scans a directory, so it must not run per render; the
+    /// daemon fills the cache between visits, so a value measured on a
+    /// previous visit is stale by the next one.
+    pub fn refresh_media_cache_usage(&mut self) {
+        self.media_cache_usage = crate::media_cache::default_usage_bytes();
+    }
+
     /// Name of the active theme.
     #[must_use]
     pub fn theme_name(&self) -> &str {
