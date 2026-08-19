@@ -2,7 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -11,7 +11,7 @@ use ferrosonic::app::App;
 use ferrosonic::config::paths::config_dir;
 use ferrosonic::config::Config;
 use ferrosonic::ipc::path::socket_path;
-use ferrosonic::ipc::SocketClient;
+use ferrosonic::ipc::{DaemonClient, DaemonRequest, DaemonResponse, EnqueueMode, SocketClient};
 
 const DAEMON_SPAWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -33,6 +33,24 @@ struct Args {
     /// this; not for direct use.
     #[arg(long, hide = true)]
     daemon: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Load a playlist by name and start playing it, without opening the UI.
+    /// Always talks to the background daemon, spawning it first if it isn't
+    /// already running.
+    Play {
+        /// Playlist name (case-insensitive, exact match).
+        playlist: String,
+
+        /// Shuffle the playlist before playing.
+        #[arg(long)]
+        shuffle: bool,
+    },
 }
 
 /// Returned guard must outlive the program; dropping it ends the
@@ -125,6 +143,10 @@ async fn main() -> anyhow::Result<()> {
 
     let config = load_config(args.config.as_deref())?;
 
+    if let Some(Command::Play { playlist, shuffle }) = args.command {
+        return run_play_command(&playlist, shuffle).await;
+    }
+
     // Internal daemon mode: the TUI re-execs the binary with --daemon.
     if args.daemon {
         install_daemon_panic_hook();
@@ -192,4 +214,70 @@ async fn connect_or_spawn(path: &std::path::Path) -> Option<std::sync::Arc<Socke
         Ok(()) => SocketClient::connect(path).await.ok(),
         Err(_) => None,
     }
+}
+
+/// `ferrosonic play <playlist> [--shuffle]`: headless, always via the
+/// background daemon (spawned if not already running), regardless of the
+/// `Daemon` config setting or `--standalone`.
+async fn run_play_command(playlist_name: &str, shuffle: bool) -> anyhow::Result<()> {
+    let path = socket_path();
+    let client = connect_or_spawn(&path).await.ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not reach or spawn the background daemon at {}",
+            path.display()
+        )
+    })?;
+
+    client.request(DaemonRequest::RefreshPlaylists).await?;
+    let state = match client.request(DaemonRequest::Snapshot).await? {
+        DaemonResponse::Snapshot(state) => *state,
+        other => anyhow::bail!("unexpected daemon response: {:?}", other),
+    };
+    let playlist = state
+        .library
+        .playlists
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case(playlist_name))
+        .ok_or_else(|| {
+            let available = state
+                .library
+                .playlists
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::anyhow!("no playlist named '{playlist_name}' found; available: {available}")
+        })?
+        .clone();
+
+    let mut songs = match client
+        .request(DaemonRequest::LoadPlaylist(playlist.id.clone()))
+        .await?
+    {
+        DaemonResponse::PlaylistSongs(songs) => songs,
+        other => anyhow::bail!("unexpected daemon response: {:?}", other),
+    };
+    if songs.is_empty() {
+        anyhow::bail!("playlist '{}' has no songs", playlist.name);
+    }
+    if shuffle {
+        use rand::seq::SliceRandom;
+        songs.shuffle(&mut rand::thread_rng());
+    }
+
+    let count = songs.len();
+    client
+        .request(DaemonRequest::EnqueueSongs {
+            songs,
+            mode: EnqueueMode::Replace { play_from: Some(0) },
+        })
+        .await?;
+    println!(
+        "Playing '{}' ({} track{}{}).",
+        playlist.name,
+        count,
+        if count == 1 { "" } else { "s" },
+        if shuffle { ", shuffled" } else { "" }
+    );
+    Ok(())
 }
