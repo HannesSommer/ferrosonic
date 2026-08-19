@@ -8,6 +8,7 @@ pub mod daemon;
 pub mod error;
 pub mod io_util;
 pub mod ipc;
+pub mod media_cache;
 pub mod mpris;
 pub(crate) mod num;
 pub mod proc_util;

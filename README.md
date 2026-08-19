@@ -11,6 +11,7 @@ It is a ground-up Rust rewrite of [Termsonic](https://git.sixfoisneuf.fr/termson
 - **Bit-perfect output** - PipeWire switches the system sample rate to match the source (44.1, 48, 96, 192 kHz and others) and restores it on exit.
 - **Gapless playback** - the next track is pre-buffered into mpv before the current one ends.
 - **Quality readout** - live sample rate, bit depth, codec, and channel layout.
+- **Local media cache** - optional on-disk copy of played tracks, so replays come off disk instead of the network. [Details below](#local-media-cache).
 - **Visualizer** - built-in cava pane with theme-matched gradient colors.
 
 ### Library and queue
@@ -147,6 +148,8 @@ Notifications = true
 | `CoverArtSize` | Cover art pane width in columns (default 16) |
 | `Scrobble` | Report plays to the server, default `true` (classic `scrobble` + OpenSubsonic `reportPlayback`) |
 | `Notifications` | Desktop track-change notifications with cover art, default `true` |
+| `MediaCache` | Keep local copies of played tracks, default `false`. See [Local media cache](#local-media-cache) |
+| `MediaCacheSizeMB` | Media cache size limit in MB, default 2048 (min 128) |
 
 Logs are written to `~/.config/ferrosonic/ferrosonic.log` (TUI) and `~/.config/ferrosonic/ferrosonicd.log` (daemon). The queue is persisted to `~/.config/ferrosonic/queue.json` so it survives daemon restarts.
 
@@ -288,7 +291,7 @@ F-keys still switch pages from the Server page; any unsaved edits are discarded 
 | `Left` | Previous option |
 | `Right` / `Enter` | Next option |
 
-Settings include theme selection, cava visualizer toggle + size, cover art toggle + size, repeat mode, auto-continue, scrobbling, desktop notifications, and the daemon-mode preference. Changes are saved automatically. The daemon-mode toggle takes effect on the next launch.
+Settings include theme selection, cava visualizer toggle + size, cover art toggle + size, repeat mode, auto-continue, scrobbling, desktop notifications, the daemon-mode preference, and the media cache (toggle, size limit, and Clear Cache). Changes are saved automatically. The daemon-mode toggle takes effect on the next launch.
 
 ## Mouse Support
 
@@ -306,6 +309,21 @@ Ferrosonic uses PipeWire's `pw-metadata` to automatically switch the system samp
 ### Gapless Playback
 
 The next track in the queue is pre-loaded into MPV's internal playlist before the current track finishes, allowing seamless transitions with no gap or click between songs.
+
+### Local media cache
+
+Off by default. Turn it on in Settings (F6) or set `MediaCache = true`.
+
+With it on, every track you play is copied to `~/.cache/ferrosonic/media/` in the background. The next time that track comes up — a replay, a repeat, or the gapless preload of the next queue entry — ferrosonic hands mpv the local file instead of the stream URL, and the network is out of the playback path entirely.
+
+- **Still bit-perfect.** Tracks are streamed with `format=raw`, so a cached file is a byte-identical copy of the file on the server. Nothing is transcoded on the way in or out.
+- **Playback never waits for the cache.** On a miss, mpv starts immediately and the copy is fetched in the background, so enabling the cache never delays a track. The cost is that a track played this way is transferred twice on its first play (once to play, once to cache); every play after that transfers nothing.
+- **Except when ferrosonic already downloads the track anyway.** Picking an album or shuffling the library pre-buffers the whole track to disk before playback starts — that is the "seamless album switches" behaviour from 0.4.0, and it is why those actions pause before playing. On that path the cache adopts the file that was just downloaded, so it is fetched only once.
+- **Bounded and self-managing.** The cache is capped by `MediaCacheSizeMB` (default 2048). When it grows past the limit, least-recently-played tracks are deleted first. A track larger than the whole cache is never stored.
+- **Safe to delete at any time.** Nothing in the cache is user state; it can all be re-fetched. `Clear Cache` on the Settings page empties it, and the directory itself can be removed while ferrosonic is not running.
+- **Partial downloads are never used.** A download lands in a temp file and is renamed into place only after it completes and matches the server's `Content-Length`, so mpv can never read a truncated file and stop the track early.
+
+Switching the cache off keeps the files, so you can turn it back on without re-downloading. Use `Clear Cache` to reclaim the disk space.
 
 ### Now Playing Display
 

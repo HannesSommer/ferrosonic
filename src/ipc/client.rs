@@ -167,6 +167,14 @@ impl DaemonClient for InProcessClient {
             DaemonRequest::SetAutoContinue(on) => ok_response(core.set_auto_continue(on).await),
             DaemonRequest::SetScrobble(on) => ok_response(core.set_scrobble(on).await),
             DaemonRequest::SetNotifications(on) => ok_response(core.set_notifications(on).await),
+            DaemonRequest::SetMediaCache(on) => ok_response(core.set_media_cache(on).await),
+            DaemonRequest::SetMediaCacheSize(mb) => {
+                ok_response(core.set_media_cache_size(mb).await)
+            }
+            DaemonRequest::ClearMediaCache => {
+                let (files, bytes) = core.clear_media_cache();
+                Ok(DaemonResponse::MediaCacheCleared { files, bytes })
+            }
             DaemonRequest::SetRepeatMode(mode) => ok_response(core.set_repeat_mode(mode).await),
             DaemonRequest::SetCoverArtEnabled(on) => {
                 ok_response(core.set_cover_art_enabled(on).await)

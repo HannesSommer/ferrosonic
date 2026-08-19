@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Local media cache (opt-in).** Played tracks can be kept on disk at
+  `~/.cache/ferrosonic/media/`, so replays and gapless preloads read the file
+  locally instead of re-streaming it. Off by default; enable it on the Settings
+  page (F6) or with `MediaCache = true`. Because tracks are streamed with
+  `format=raw`, a cached file is a byte-identical copy of the server's file and
+  playback stays bit-perfect.
+
+  Playback never waits on the cache: on a miss mpv streams immediately while
+  the copy is fetched in the background, so a track's first play transfers it
+  twice and every later play transfers nothing. The pre-buffered path used for
+  album switches and library shuffle already downloads the whole track before
+  playing, so there the cache adopts that copy rather than fetching it a second
+  time. The cache is capped by
+  `MediaCacheSizeMB` (default 2048, minimum 128) and evicts least-recently-played
+  tracks first; a track larger than the whole cache is never stored. Downloads
+  land in a temp file and are renamed into place only after completing and
+  matching the server's `Content-Length`, so mpv can never read a truncated
+  file and end the track early. New Settings rows cover the toggle, the size
+  limit, and a Clear Cache action showing current usage.
+
 ## [0.6.1] - 2026-06-27
 
 ### Fixed

@@ -34,6 +34,8 @@ pub const KNOWN_CONFIG_KEYS: &[&str] = &[
     "RateSwitchDelayMs",
     "MusicFolderId",
     "MusicFolderChosen",
+    "MediaCache",
+    "MediaCacheSizeMB",
 ];
 
 /// A command run to obtain the password: a shell string or an argv array.
@@ -147,6 +149,20 @@ pub struct Config {
     /// to the server's first (default) library rather than all libraries.
     #[serde(rename = "MusicFolderChosen", default)]
     pub music_folder_chosen: bool,
+
+    /// Keep a local copy of played tracks so replays come off disk instead of
+    /// the network. Off by default: it spends disk space and, on a track's
+    /// first play, fetches the file a second time in the background.
+    #[serde(rename = "MediaCache", default)]
+    pub media_cache: bool,
+
+    /// Size cap of the media cache in megabytes. Least-recently-played tracks
+    /// are evicted once the cache exceeds it.
+    #[serde(
+        rename = "MediaCacheSizeMB",
+        default = "Config::default_media_cache_size_mb"
+    )]
+    pub media_cache_size_mb: u32,
 }
 
 // Serialization mirror of Config; same independent TOML setting keys.
@@ -194,6 +210,10 @@ struct ConfigOnDisk<'a> {
         skip_serializing_if = "std::ops::Not::not"
     )]
     music_folder_chosen: bool,
+    #[serde(rename = "MediaCache")]
+    media_cache: bool,
+    #[serde(rename = "MediaCacheSizeMB")]
+    media_cache_size_mb: u32,
 }
 
 // Serializes the revealed secret. Replaces a serialize_with fn whose
@@ -236,6 +256,8 @@ impl Config {
             rate_switch_delay_ms: self.rate_switch_delay_ms,
             music_folder_id: self.music_folder_id,
             music_folder_chosen: self.music_folder_chosen,
+            media_cache: self.media_cache,
+            media_cache_size_mb: self.media_cache_size_mb,
         }
     }
 }
@@ -369,6 +391,8 @@ impl Default for Config {
             music_folder_chosen: false,
             password_eval: None,
             password_keyring: false,
+            media_cache: false,
+            media_cache_size_mb: Self::default_media_cache_size_mb(),
         }
     }
 }
@@ -396,6 +420,38 @@ impl Config {
 
     const fn default_rate_switch_delay_ms() -> u32 {
         500
+    }
+
+    const fn default_media_cache_size_mb() -> u32 {
+        2048
+    }
+
+    /// Lowest media cache size the UI and setters accept, in megabytes.
+    pub const MEDIA_CACHE_MIN_MB: u32 = 128;
+
+    /// Highest media cache size the UI and setters accept, in megabytes.
+    pub const MEDIA_CACHE_MAX_MB: u32 = 100_000;
+
+    /// Media cache size cap as bytes, clamped to the supported range.
+    ///
+    /// ```
+    /// use ferrosonic::config::Config;
+    /// let mut c = Config::new();
+    /// c.media_cache_size_mb = 1;
+    /// assert_eq!(c.media_cache_capacity_bytes(), 128 * 1024 * 1024);
+    /// c.media_cache_size_mb = 512;
+    /// assert_eq!(c.media_cache_capacity_bytes(), 512 * 1024 * 1024);
+    /// ```
+    #[must_use]
+    pub const fn media_cache_capacity_bytes(&self) -> u64 {
+        let mb = if self.media_cache_size_mb < Self::MEDIA_CACHE_MIN_MB {
+            Self::MEDIA_CACHE_MIN_MB
+        } else if self.media_cache_size_mb > Self::MEDIA_CACHE_MAX_MB {
+            Self::MEDIA_CACHE_MAX_MB
+        } else {
+            self.media_cache_size_mb
+        };
+        mb as u64 * 1024 * 1024
     }
 
     /// Alias for [`Config::default`].

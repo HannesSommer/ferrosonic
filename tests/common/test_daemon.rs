@@ -62,6 +62,10 @@ impl TestDaemon {
         mpv_version: &str,
     ) -> Self {
         std::env::set_var("FERROSONIC_CONFIG_DIR", config_dir.path());
+        // Keep the media cache inside the test tempdir. Without this a test
+        // that enables caching would write tracks into the developer's real
+        // ~/.cache/ferrosonic and outlive the run.
+        std::env::set_var("FERROSONIC_CACHE_DIR", config_dir.path().join("cache"));
         // Keep credential saves off the real OS keychain. Hermetic under
         // nextest's process-per-test; mark `#[serial]` for cargo test.
         ferrosonic::secret_store::install_test_store(Arc::new(

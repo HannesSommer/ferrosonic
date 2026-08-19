@@ -206,6 +206,14 @@ pub struct SettingsState {
     pub scrobble: bool,
     /// Show a desktop notification on track change.
     pub notifications: bool,
+    /// Keep local copies of played tracks for offline/repeat playback.
+    pub media_cache: bool,
+    /// Media cache size cap in megabytes.
+    pub media_cache_size_mb: u32,
+    /// Bytes the media cache currently holds. `None` until measured; refreshed
+    /// by the Settings page rather than on every render, since it costs a
+    /// directory scan.
+    pub media_cache_usage: Option<u64>,
 }
 
 impl Default for SettingsState {
@@ -223,11 +231,24 @@ impl Default for SettingsState {
             cover_art_size: 16,
             scrobble: true,
             notifications: true,
+            media_cache: false,
+            media_cache_size_mb: 2048,
+            media_cache_usage: None,
         }
     }
 }
 
 impl SettingsState {
+    /// Re-measure the media cache for the Settings readout.
+    ///
+    /// Call this on every entry to the Settings page, whichever way the user
+    /// got there. It scans a directory, so it must not run per render; the
+    /// daemon fills the cache between visits, so a value measured on a
+    /// previous visit is stale by the next one.
+    pub fn refresh_media_cache_usage(&mut self) {
+        self.media_cache_usage = crate::media_cache::default_usage_bytes();
+    }
+
     /// Name of the active theme.
     #[must_use]
     pub fn theme_name(&self) -> &str {

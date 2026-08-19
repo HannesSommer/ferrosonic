@@ -30,6 +30,8 @@ fn arb_config() -> impl Strategy<Value = Config> {
             any::<u32>(),
             any::<Option<i64>>(),
             any::<bool>(),
+            any::<bool>(),
+            any::<u32>(),
         ),
     )
         .prop_map(
@@ -51,6 +53,8 @@ fn arb_config() -> impl Strategy<Value = Config> {
                     rate_switch_delay_ms,
                     music_folder_id,
                     music_folder_chosen,
+                    media_cache,
+                    media_cache_size_mb,
                 ),
             )| Config {
                 base_url,
@@ -72,6 +76,8 @@ fn arb_config() -> impl Strategy<Value = Config> {
                 rate_switch_delay_ms,
                 music_folder_id,
                 music_folder_chosen,
+                media_cache,
+                media_cache_size_mb,
             },
         )
 }

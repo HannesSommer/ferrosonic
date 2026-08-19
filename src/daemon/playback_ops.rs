@@ -257,12 +257,19 @@ impl DaemonCore {
             }
         };
 
+        let source = self.resolve_playback_source(&song, stream_url, mode);
+
         info!(
-            "Playing: {} (queue pos {}) mode={:?} start={}",
-            song.title, pos, mode, start_at
+            "Playing: {} (queue pos {}) mode={:?} start={} cached={}",
+            song.title,
+            pos,
+            mode,
+            start_at,
+            source.is_cached()
         );
 
-        self.dispatch_play(stream_url, pos, mode, start_at).await?;
+        self.dispatch_play(source, &song, pos, mode, start_at)
+            .await?;
         if start_at > 0.0 {
             let mut state = self.state.write().await;
             state.now_playing.position = start_at;
@@ -296,6 +303,11 @@ impl DaemonCore {
                 Err(_) => return,
             }
         };
+        // Resolving here also starts the background fill a full track ahead of
+        // the advance, which is the best chance any fill gets to finish before
+        // the track it caches is needed.
+        let source = self.resolve_playback_source(&next_song, url, PlayMode::Direct);
+        let url = source.as_mpv_arg().into_owned();
 
         let mut mpv = self.mpv.lock().await;
         // A newer loadfile (concurrent play or a tick advance) superseded this

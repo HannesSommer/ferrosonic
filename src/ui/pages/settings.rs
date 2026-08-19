@@ -70,6 +70,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState<'_>) {
     let scrobble_val = if settings.scrobble { "On" } else { "Off" }.to_string();
     let daemon_val = if settings.daemon_enabled { "On" } else { "Off" }.to_string();
     let notifications_val = if settings.notifications { "On" } else { "Off" }.to_string();
+    let media_cache_val = if settings.media_cache { "On" } else { "Off" }.to_string();
+    let media_cache_size_val = format!("{} MB", settings.media_cache_size_mb);
+    // Usage is measured by the Settings key handler, not per render; until it
+    // has run once the row says so rather than claiming an empty cache.
+    let media_cache_usage_val = settings.media_cache_usage.map_or_else(
+        || "press Enter to clear".to_string(),
+        |bytes| {
+            format!(
+                "{} used - press Enter to clear",
+                crate::media_cache::format_size(bytes)
+            )
+        },
+    );
 
     let x = inner.x;
     let w = inner.width;
@@ -134,17 +147,38 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState<'_>) {
             value: notifications_val,
             idx: 9,
         },
+        Item::Gap,
+        Item::Heading("Media Cache"),
+        Item::Row {
+            label: "Media Cache",
+            value: media_cache_val,
+            idx: 10,
+        },
+        Item::Row {
+            label: "Cache Limit",
+            value: media_cache_size_val,
+            idx: 11,
+        },
+        Item::Row {
+            label: "Clear Cache",
+            value: media_cache_usage_val,
+            idx: 12,
+        },
     ];
 
+    let row_limit = inner.y + inner.height.saturating_sub(1);
+    // Scroll so the selected row stays visible when the panel is too short.
+    let visible = (row_limit - inner.y) as usize;
+    let sel_idx = items
+        .iter()
+        .position(|it| matches!(it, Item::Row { idx, .. } if *idx == sel))
+        .unwrap_or(0);
+    let start = sel_idx.saturating_sub(visible.saturating_sub(1));
+    // The list is taller than a 24-row terminal can show, so rows past the
+    // fold are invisible with no hint they exist. Mark which way there is more.
+    let hint = scroll_hint(start > 0, start + visible < items.len());
+
     {
-        let row_limit = inner.y + inner.height.saturating_sub(1);
-        // Scroll so the selected row stays visible when the panel is too short.
-        let visible = (row_limit - inner.y) as usize;
-        let sel_idx = items
-            .iter()
-            .position(|it| matches!(it, Item::Row { idx, .. } if *idx == sel))
-            .unwrap_or(0);
-        let start = sel_idx.saturating_sub(visible.saturating_sub(1));
         let buf = frame.buffer_mut();
         for (y, item) in (inner.y..).zip(items.iter().skip(start)) {
             if y >= row_limit {
@@ -169,15 +203,36 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AppState<'_>) {
 
     let help_text = settings_help_text(sel, cava_ok);
     let help_y = inner.y + inner.height.saturating_sub(1);
+    // Reserve the right edge for the scroll hint so a long help line cannot
+    // overwrite it.
+    let hint_w = u16::try_from(hint.chars().count()).unwrap_or(0);
+    let help_w = inner.width.saturating_sub(hint_w);
     let help = Paragraph::new(help_text).style(Style::default().fg(colors.muted));
-    help.render(
-        Rect::new(inner.x, help_y, inner.width, 1),
-        frame.buffer_mut(),
-    );
+    help.render(Rect::new(inner.x, help_y, help_w, 1), frame.buffer_mut());
+    if hint_w > 0 && inner.width > hint_w {
+        Paragraph::new(hint)
+            .style(Style::default().fg(colors.accent))
+            .render(
+                Rect::new(inner.x + help_w, help_y, hint_w, 1),
+                frame.buffer_mut(),
+            );
+    }
+}
+
+/// Marker showing which directions hold rows outside the visible window, so a
+/// terminal too short for the whole list does not silently hide settings.
+const fn scroll_hint(more_above: bool, more_below: bool) -> &'static str {
+    match (more_above, more_below) {
+        (true, true) => "▲▼",
+        (true, false) => "▲",
+        (false, true) => "▼",
+        (false, false) => "",
+    }
 }
 
 /// Help-line text for the selected settings field. Indices MUST track the
-/// `Item::Row { idx }` order in `render`: 7 Scrobble, 8 Daemon, 9 Notifications.
+/// `Item::Row { idx }` order in `render`: 7 Scrobble, 8 Daemon, 9 Notifications,
+/// 10-12 the media cache rows.
 // Each setting's cava-ok/not-installed cases kept adjacent; merging would split setting 2.
 #[allow(clippy::match_same_arms)]
 const fn settings_help_text(sel: usize, cava_ok: bool) -> &'static str {
@@ -194,6 +249,9 @@ const fn settings_help_text(sel: usize, cava_ok: bool) -> &'static str {
         7 => "← → or Enter to toggle scrobbling (report plays to the server)",
         8 => "← → or Enter to toggle background daemon (takes effect on next launch)",
         9 => "← → or Enter to toggle desktop notifications on track change",
+        10 => "← → or Enter to keep local copies of played tracks (replays skip the network)",
+        11 => "← → to adjust the media cache size limit (256 MB steps)",
+        12 => "Enter to delete every cached track",
         _ => "",
     }
 }
@@ -274,11 +332,36 @@ mod tests {
             settings_help_text(9, true).contains("notifications"),
             "idx 9 is Desktop Notifications"
         );
-        assert_eq!(
-            settings_help_text(10, true),
-            "",
-            "no field beyond Notifications"
+        assert!(
+            settings_help_text(10, true).contains("local copies"),
+            "idx 10 is Media Cache"
         );
+        assert!(
+            settings_help_text(11, true).contains("size limit"),
+            "idx 11 is the Cache Limit"
+        );
+        assert!(
+            settings_help_text(12, true).contains("delete"),
+            "idx 12 is Clear Cache"
+        );
+        assert_eq!(
+            settings_help_text(13, true),
+            "",
+            "no field beyond Clear Cache"
+        );
+    }
+
+    #[test]
+    fn scroll_hint_marks_each_direction_with_hidden_rows() {
+        use super::scroll_hint;
+        assert_eq!(
+            scroll_hint(false, false),
+            "",
+            "a fully visible list is unmarked"
+        );
+        assert_eq!(scroll_hint(false, true), "▼");
+        assert_eq!(scroll_hint(true, false), "▲");
+        assert_eq!(scroll_hint(true, true), "▲▼");
     }
 
     #[test]

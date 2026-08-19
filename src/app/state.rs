@@ -195,6 +195,8 @@ pub fn new_shared_client_state(config: &Config) -> SharedClientState {
     client.settings_state.cover_art_size = config.cover_art_size.clamp(8, 24);
     client.settings_state.scrobble = config.scrobble;
     client.settings_state.notifications = config.notifications;
+    client.settings_state.media_cache = config.media_cache;
+    client.settings_state.media_cache_size_mb = config.media_cache_size_mb;
     client.songs.selected_option = Some(SongOption::Starred);
     Arc::new(RwLock::new(client))
 }

@@ -226,6 +226,8 @@ async fn apply_config_changed(
     let auto_continue = cfg.auto_continue;
     let scrobble = cfg.scrobble;
     let notifications = cfg.notifications;
+    let media_cache = cfg.media_cache;
+    let media_cache_size_mb = cfg.media_cache_size_mb;
     {
         let mut ds = daemon_state.write().await;
         ds.config = cfg;
@@ -238,6 +240,8 @@ async fn apply_config_changed(
         cs.settings_state.auto_continue = auto_continue;
         cs.settings_state.scrobble = scrobble;
         cs.settings_state.notifications = notifications;
+        cs.settings_state.media_cache = media_cache;
+        cs.settings_state.media_cache_size_mb = media_cache_size_mb;
     }
 
     if cover_art_enabled {
